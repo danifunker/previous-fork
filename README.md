@@ -33,10 +33,16 @@ To follow upstream, add a new snapshot to `upstream` and rebase `main` on it.
 
 ## Releases
 
-Pushing a tag such as `r1862-1` builds macOS (universal app), Linux (x86_64,
-arm64) and Windows (x86_64) archives and publishes them as a GitHub release
-(`.github/workflows/release.yml`). The Actions tab can also run it by hand,
-which builds the archives without releasing them.
+`.github/workflows/release.yml` builds macOS (universal app), Linux (x86_64,
+arm64) and Windows (x86_64) archives. To publish a release:
+
+- Actions tab > "Build and release" > "Run workflow": pick the branch and
+  signing mode, enter a new tag such as `r1862-1` in "release_tag", run. The
+  workflow builds everything, creates the tag and publishes the release.
+- Or push a tag (`git tag r1862-1 && git push origin r1862-1`).
+
+A manual run with "release_tag" left empty only builds; the archives are
+attached to the run (Summary page, "Artifacts").
 
 The macOS signing mode is the "signing" choice of a manual run, else the
 repository variable `MACOS_SIGNING`, else `ad-hoc`:

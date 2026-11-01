@@ -1,7 +1,9 @@
 name: Build and release
 
-# Push a tag (e.g. r1862-1) to build all platforms and publish a GitHub
-# release. "Run workflow" on the Actions tab builds the artifacts only.
+# Releases: either push a tag (e.g. r1862-1), or use "Run workflow" on the
+# Actions tab and fill in "release_tag" - the run then creates that tag on
+# the selected branch and publishes the release. With "release_tag" empty
+# a manual run only builds; the archives are attached to the run.
 #
 # macOS signing mode: the "signing" input of a manual run, else the
 # repository variable MACOS_SIGNING, else ad-hoc.
@@ -17,6 +19,10 @@ on:
         type: choice
         options: [ad-hoc, developer-signing]
         default: ad-hoc
+      release_tag:
+        description: Release tag to create (e.g. r1862-1); empty = build only
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -47,7 +53,7 @@ jobs:
             *) echo "::error::unknown signing mode '$SIGNING' (ad-hoc or developer-signing)"; exit 1 ;;
           esac
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build SDL3 (universal, shared)
         run: |
@@ -192,10 +198,10 @@ jobs:
           cp README.md gpl.txt readme.previous.txt *.howto.txt $d/
           ditto -c -k --keepParent $d $d.zip
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
-          name: previous-macos-universal
           path: previous-macos-universal.zip
+          archive: false
 
   linux:
     strategy:
@@ -207,7 +213,7 @@ jobs:
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install build dependencies
         run: |
@@ -256,10 +262,10 @@ jobs:
           (sleep 5; touch done) & $P --dialogs off --sound off --exit-when done --timeout 60 >/dev/null 2>&1; r=$?
           echo "--exit-when: $r"; [ $r -eq 0 ] || exit 1
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
-          name: previous-linux-${{ matrix.arch }}
           path: previous-linux-${{ matrix.arch }}.tar.gz
+          archive: false
 
   windows:
     runs-on: windows-latest
@@ -267,18 +273,18 @@ jobs:
       run:
         shell: msys2 {0}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: msys2/setup-msys2@v2
         with:
-          msystem: MINGW64
+          msystem: UCRT64
           update: true
           install: >-
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-cmake
-            mingw-w64-x86_64-ninja
-            mingw-w64-x86_64-sdl3
-            mingw-w64-x86_64-zlib
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-sdl3
+            mingw-w64-ucrt-x86_64-zlib
             zip
 
       - name: Build Previous
@@ -293,8 +299,8 @@ jobs:
           d=previous-windows-x86_64
           mkdir $d
           cp build/src/previous.exe build/src/ditool/ditool.exe src/*.BIN $d/
-          # the MinGW / SDL3 DLLs the executables need
-          for exe in $d/*.exe; do ldd "$exe"; done | awk '/\/mingw64\// {print $3}' | sort -u | xargs -I{} cp {} $d/
+          # the UCRT64 runtime / SDL3 DLLs the executables need
+          for exe in $d/*.exe; do ldd "$exe"; done | awk '/\/ucrt64\// {print $3}' | sort -u | xargs -I{} cp {} $d/
           cp README.md gpl.txt readme.previous.txt *.howto.txt $d/
           ls $d
           zip -qr $d.zip $d
@@ -313,17 +319,17 @@ jobs:
           (sleep 5; touch done) & $P --dialogs off --sound off --exit-when done --timeout 60 </dev/null >/dev/null 2>&1; r=$?
           echo "--exit-when: $r"; [ $r -eq 0 ] || exit 1
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
-          name: previous-windows-x86_64
           path: previous-windows-x86_64.zip
+          archive: false
 
   release:
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') || inputs.release_tag != ''
     needs: [macos, linux, windows]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
@@ -332,7 +338,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           MAC_SIGNED: ${{ needs.macos.outputs.signed }}
+          TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::release $TAG already exists"; exit 1
+          fi
           ls -la dist
           cat > notes.md <<'EOF'
           Previous with Hatari-style command line options, command FIFO and serial-port-to-host I/O
@@ -354,5 +364,6 @@ jobs:
             printf '%s\n' "macOS: not notarized (ad-hoc signed). If macOS refuses to open the app, run" \
               '`xattr -dr com.apple.quarantine Previous.app`.' >> notes.md
           fi
-          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" \
-            --title "Previous $GITHUB_REF_NAME" --notes-file notes.md
+          # creates the tag on this commit if it doesn't exist yet
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "Previous $TAG" --notes-file notes.md
