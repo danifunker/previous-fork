@@ -39,6 +39,9 @@
 /* Define to 1 if you have the `select' function. */
 #cmakedefine HAVE_SELECT 1
 
+/* Define to 1 if you have the <sys/socket.h> and <sys/un.h> header files. */
+#cmakedefine HAVE_UNIX_DOMAIN_SOCKETS 1
+
 /* Define to 1 if you have the 'gettimeofday' function. */
 #cmakedefine HAVE_GETTIMEOFDAY 1
 

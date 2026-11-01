@@ -84,6 +84,48 @@ bool Dialog_DoProperty(void)
 }
 
 
+/* Whether GUI dialogs may be shown (--dialogs). When false, nothing waits
+ * for user input: alerts are only logged, questions are answered with
+ * "cancel" and missing files end the program with QUIT_MISSING_FILE. */
+bool bShowDialogs = true;
+
+static void Dialog_MissingFatal(const char *type, const char *name) {
+	Log_Printf(LOG_ERROR, "%s not found: '%s'\n", type, name);
+	Main_SetQuitValue(QUIT_MISSING_FILE);
+}
+
+static void Dialog_MissingRom(const char *type, char *imgname, const char *defname, bool *enabled) {
+	if (!bShowDialogs) {
+		char what[128];
+		snprintf(what, sizeof(what), "ROM for %s", type);
+		Dialog_MissingFatal(what, imgname);
+		return;
+	}
+	DlgMissing_Rom(type, imgname, defname, enabled);
+}
+
+static void Dialog_MissingDisk(const char *type, int num, char *imgname, bool *inserted, bool *wp) {
+	if (!bShowDialogs) {
+		char what[128];
+		snprintf(what, sizeof(what), "%s %d image", type, num);
+		Dialog_MissingFatal(what, imgname);
+		*inserted = false;
+		return;
+	}
+	DlgMissing_Disk(type, num, imgname, inserted, wp);
+}
+
+static void Dialog_MissingDir(const char *type, char *dirname, const char *defname) {
+	if (!bShowDialogs) {
+		char what[128];
+		snprintf(what, sizeof(what), "%s directory", type);
+		Dialog_MissingFatal(what, dirname);
+		return;
+	}
+	DlgMissing_Dir(type, dirname, defname);
+}
+
+
 /* Function to check if all necessary files exist. If loading of a file fails, we bring up a dialog to let the
  * user choose another file. This is repeated for each missing file.
  */
@@ -117,7 +159,7 @@ void Dialog_CheckFiles(void) {
 		}
 	}
 	while (!bQuitProgram && !File_Exists(szMissingFile)) {
-		DlgMissing_Rom(szMachine, szMissingFile, szDefault, &bEnable);
+		Dialog_MissingRom(szMachine, szMissingFile, szDefault, &bEnable);
 	}
 	for (i = 0; i < ND_MAX_BOARDS; i++) {
 		while (!bQuitProgram &&
@@ -125,7 +167,7 @@ void Dialog_CheckFiles(void) {
 		       !File_Exists(ConfigureParams.Dimension.board[i].szRomFileName)) {
 			snprintf(szMachine, sizeof(szMachine), "NeXTdimension at slot %i", i*2+2);
 			File_MakePathBuf(szDefault, sizeof(szDefault), Paths_GetDataDir(), "ND_step1_v43", "BIN");
-			DlgMissing_Rom(szMachine, ConfigureParams.Dimension.board[i].szRomFileName,
+			Dialog_MissingRom(szMachine, ConfigureParams.Dimension.board[i].szRomFileName,
 			               szDefault, &ConfigureParams.Dimension.board[i].bEnabled);
 		}
 	}
@@ -136,7 +178,7 @@ void Dialog_CheckFiles(void) {
 		       (ConfigureParams.SCSI.target[i].nDeviceType!=SD_NONE) &&
 		       ConfigureParams.SCSI.target[i].bDiskInserted &&
 		       !File_Exists(ConfigureParams.SCSI.target[i].szImageName)) {
-			DlgMissing_Disk("SCSI disk", i,
+			Dialog_MissingDisk("SCSI disk", i,
 			                ConfigureParams.SCSI.target[i].szImageName,
 			                &ConfigureParams.SCSI.target[i].bDiskInserted,
 			                &ConfigureParams.SCSI.target[i].bWriteProtected);
@@ -153,7 +195,7 @@ void Dialog_CheckFiles(void) {
 		       ConfigureParams.MO.drive[i].bDriveConnected &&
 		       ConfigureParams.MO.drive[i].bDiskInserted &&
 		       !File_Exists(ConfigureParams.MO.drive[i].szImageName)) {
-			DlgMissing_Disk("MO disk", i,
+			Dialog_MissingDisk("MO disk", i,
 			                ConfigureParams.MO.drive[i].szImageName,
 			                &ConfigureParams.MO.drive[i].bDiskInserted,
 			                &ConfigureParams.MO.drive[i].bWriteProtected);
@@ -166,7 +208,7 @@ void Dialog_CheckFiles(void) {
 		       ConfigureParams.Floppy.drive[i].bDriveConnected &&
 		       ConfigureParams.Floppy.drive[i].bDiskInserted &&
 		       !File_Exists(ConfigureParams.Floppy.drive[i].szImageName)) {
-			DlgMissing_Disk("Floppy", i,
+			Dialog_MissingDisk("Floppy", i,
 			                ConfigureParams.Floppy.drive[i].szImageName,
 			                &ConfigureParams.Floppy.drive[i].bDiskInserted,
 			                &ConfigureParams.Floppy.drive[i].bWriteProtected);
@@ -175,9 +217,9 @@ void Dialog_CheckFiles(void) {
 	
 	/* Check if NFS shared direcory and printer output directory exist. */
 	while (!bQuitProgram && !File_DirExists(ConfigureParams.Ethernet.nfs[0].szPathName)) {
-		DlgMissing_Dir("NFS shared", ConfigureParams.Ethernet.nfs[0].szPathName, Paths_GetUserHome());
+		Dialog_MissingDir("NFS shared", ConfigureParams.Ethernet.nfs[0].szPathName, Paths_GetUserHome());
 	}
 	while (!bQuitProgram && !File_DirExists(ConfigureParams.Printer.szPrintToFileName)) {
-		DlgMissing_Dir("Printer output", ConfigureParams.Printer.szPrintToFileName, Paths_GetUserHome());
+		Dialog_MissingDir("Printer output", ConfigureParams.Printer.szPrintToFileName, Paths_GetUserHome());
 	}
 }

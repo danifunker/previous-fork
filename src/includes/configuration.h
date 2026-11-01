@@ -248,6 +248,15 @@ typedef struct {
 } CNF_FLOPPY;
 
 
+/* Serial port (SCC) configuration */
+#define CNF_SCC_CHANNELS 2      /* 0 = channel A, 1 = channel B */
+typedef struct {
+  bool EnableScc[CNF_SCC_CHANNELS];
+  char SccInFileName[CNF_SCC_CHANNELS][FILENAME_MAX];
+  char SccOutFileName[CNF_SCC_CHANNELS][FILENAME_MAX];
+} CNF_SERIAL;
+
+
 /* Ethernet configuration */
 #define EN_MAX_SHARES 4
 typedef struct {
@@ -410,6 +419,7 @@ typedef struct
   CNF_SCSI      SCSI;
   CNF_MO        MO;
   CNF_FLOPPY    Floppy;
+  CNF_SERIAL    Serial;
   CNF_ENET      Ethernet;
   CNF_ROM       Rom;
   CNF_PRINTER   Printer;

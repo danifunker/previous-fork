@@ -16,6 +16,7 @@ const char Change_fileid[] = "Previous change.c";
 #include "main.h"
 #include "configuration.h"
 #include "change.h"
+#include "options.h"
 #include "dialog.h"
 #include "ioMem.h"
 #include "m68000.h"
@@ -367,7 +368,7 @@ void Change_CopyChangedParamsToConfiguration(CNF_PARAMS *current, CNF_PARAMS *ch
  */
 static bool Change_Options(int argc, const char *argv[])
 {
-	bool bOK = false;
+	bool bOK;
 	CNF_PARAMS current;
 
 	Main_PauseEmulation(false);
@@ -375,9 +376,11 @@ static bool Change_Options(int argc, const char *argv[])
 	/* get configuration changes */
 	current = ConfigureParams;
 	ConfigureParams.Screen.bFullScreen = bInFullScreen;
+	bOK = Opt_ParseParameters(argc, argv);
 
 	/* Check if reset is required and ask user if he really wants to continue */
-	if (Change_DoNeedReset(&current, &ConfigureParams)) {
+	if (bOK && bShowDialogs && Change_DoNeedReset(&current, &ConfigureParams)
+	    && current.Log.nAlertDlgLogLevel > LOG_FATAL) {
 		bOK = DlgAlert_Query("The emulated system must be "
 				     "reset to apply these changes. "
 				     "Apply changes now and reset "
@@ -437,7 +440,7 @@ bool Change_ApplyCommandline(char *cmdline)
 	/* parse them to array */
 	fprintf(stderr, "Command line with '%d' arguments:\n", argc);
 	inarg = argc = 0;
-	argv[argc++] = "hatari";
+	argv[argc++] = "previous";
 	for (i = 0; cmdline[i]; i++)
 	{
 		if (isspace((unsigned char)cmdline[i]))

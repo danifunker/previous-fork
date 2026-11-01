@@ -17,6 +17,24 @@ const char Scc_fileid[] = "Previous scc.c";
 #include "sysReg.h"
 #include "dma.h"
 #include "tablet.h"
+#include "main.h"
+
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#ifdef _MSC_VER
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
+
+#ifndef O_NONBLOCK
+# ifdef O_NDELAY
+#  define O_NONBLOCK O_NDELAY
+# else
+#  define O_NONBLOCK 0
+# endif
+#endif
 
 #define LOG_SCC_LEVEL     LOG_DEBUG
 #define LOG_SCC_IO_LEVEL  LOG_DEBUG
@@ -33,6 +51,17 @@ struct {
 } scc[2];
 
 uint8_t scc_register_pointer = 0;
+
+/* Host side of the serial ports (--scc-a-in/out, --scc-b-in/out) */
+static int  scc_host_rd[2] = { -1, -1 };
+static int  scc_host_wr[2] = { -1, -1 };
+static bool scc_host_rx    = false;   /* any input handle open */
+#define SCC_HOST_POLL_CYCLES 20000    /* ~1 character per ms at 25 MHz */
+
+/* --exit-on: quit when the guest sends this text on either port */
+static char  *scc_exit_text = NULL;
+static size_t scc_exit_len  = 0;
+static size_t scc_exit_pos[2];
 
 
 /* Read Registers */
@@ -314,6 +343,124 @@ static void scc_hard_reset(void) {
 
     set_interrupt(INT_SCC, RELEASE_INT);
     CycInt_RemovePendingEvent(EVENT_SCC_IO);
+    if (scc_host_rx) {
+        CycInt_AddCyclesEvent(SCC_HOST_POLL_CYCLES, EVENT_SCC_IO);
+    }
+}
+
+
+/* Host side of the serial ports */
+static void scc_host_init_channel(int ch) {
+    bool *enable = &ConfigureParams.Serial.EnableScc[ch];
+    char *in     = ConfigureParams.Serial.SccInFileName[ch];
+    char *out    = ConfigureParams.Serial.SccOutFileName[ch];
+
+    scc_host_rd[ch] = scc_host_wr[ch] = -1;
+
+    if (!*enable)
+        return;
+
+    if (in[0] && strcmp(in, out) == 0) {
+        /* Same file for both directions: only for tty devices */
+        scc_host_rd[ch] = open(in, O_RDWR | O_NONBLOCK);
+        if (scc_host_rd[ch] >= 0) {
+            if (isatty(scc_host_rd[ch])) {
+                scc_host_wr[ch] = scc_host_rd[ch];
+            } else {
+                Log_Printf(LOG_ERROR, "[SCC] Setting channel %c input and output "
+                           "to the same file only works with tty devices.\n", 'A'+ch);
+                close(scc_host_rd[ch]);
+                scc_host_rd[ch] = -1;
+            }
+        } else {
+            Log_Printf(LOG_ERROR, "[SCC] Can not open device '%s'\n", in);
+        }
+    } else {
+        if (in[0]) {
+            scc_host_rd[ch] = open(in, O_RDONLY | O_NONBLOCK);
+            if (scc_host_rd[ch] < 0)
+                Log_Printf(LOG_ERROR, "[SCC] Can not open input file '%s'\n", in);
+        }
+        if (out[0]) {
+            scc_host_wr[ch] = open(out, O_CREAT | O_WRONLY | O_TRUNC | O_NONBLOCK, S_IRUSR | S_IWUSR);
+            if (scc_host_wr[ch] < 0)
+                Log_Printf(LOG_ERROR, "[SCC] Can not open output file '%s': %s\n", out, strerror(errno));
+        }
+    }
+
+    if (scc_host_rd[ch] < 0 && scc_host_wr[ch] < 0)
+        *enable = false;
+}
+
+void SCC_Init(void) {
+    int ch;
+    for (ch = 0; ch < 2; ch++) {
+        scc_host_init_channel(ch);
+        if (scc_host_rd[ch] >= 0)
+            Log_Printf(LOG_WARN, "[SCC] Channel %c input from %s\n", 'A'+ch, ConfigureParams.Serial.SccInFileName[ch]);
+        if (scc_host_wr[ch] >= 0)
+            Log_Printf(LOG_WARN, "[SCC] Channel %c output to %s\n", 'A'+ch, ConfigureParams.Serial.SccOutFileName[ch]);
+    }
+    scc_host_rx = (scc_host_rd[0] >= 0 || scc_host_rd[1] >= 0);
+}
+
+void SCC_UnInit(void) {
+    int ch;
+    for (ch = 0; ch < 2; ch++) {
+        if (scc_host_rd[ch] >= 0)
+            close(scc_host_rd[ch]);
+        if (scc_host_wr[ch] >= 0 && scc_host_wr[ch] != scc_host_rd[ch])
+            close(scc_host_wr[ch]);
+        scc_host_rd[ch] = scc_host_wr[ch] = -1;
+    }
+    scc_host_rx = false;
+}
+
+void SCC_SetExitText(const char *text) {
+    free(scc_exit_text);
+    scc_exit_text = (text && text[0]) ? strdup(text) : NULL;
+    scc_exit_len  = scc_exit_text ? strlen(scc_exit_text) : 0;
+    scc_exit_pos[0] = scc_exit_pos[1] = 0;
+}
+
+static void scc_host_match(int ch, uint8_t val) {
+    size_t *pos = &scc_exit_pos[ch];
+
+    /* simple restartable match; good enough for marker strings */
+    if (val == (uint8_t)scc_exit_text[*pos]) {
+        if (++*pos == scc_exit_len) {
+            Log_Printf(LOG_WARN, "[SCC] Exit text seen on channel %c\n", 'A'+ch);
+            scc_exit_len = 0;
+            Main_SetQuitValue(0);
+        }
+    } else {
+        *pos = (val == (uint8_t)scc_exit_text[0]) ? 1 : 0;
+    }
+}
+
+static void scc_host_write(int ch, uint8_t val) {
+    if (scc_host_wr[ch] >= 0) {
+        ssize_t nb;
+        do {
+            nb = write(scc_host_wr[ch], &val, 1);
+        } while (nb < 0 && errno == EINTR);
+        if (nb < 0 && errno != EAGAIN) {
+            Log_Printf(LOG_WARN, "[SCC] Channel %c: write failed (%s)\n", 'A'+ch, strerror(errno));
+        }
+    }
+    if (scc_exit_len) {
+        scc_host_match(ch, val);
+    }
+}
+
+static bool scc_host_read(int ch, uint8_t *val) {
+    ssize_t nb;
+    if (scc_host_rd[ch] < 0)
+        return false;
+    do {
+        nb = read(scc_host_rd[ch], val, 1);
+    } while (nb < 0 && errno == EINTR);
+    return nb == 1;
 }
 
 
@@ -338,7 +485,7 @@ static void scc_send(int ch, uint8_t val) {
         if (ch && ConfigureParams.Tablet.nTabletType) {
             tablet_receive(val);
         } else {
-            /* send to real world */
+            scc_host_write(ch, val);
         }
     }
     
@@ -353,7 +500,7 @@ static void scc_send_dma(int ch, uint8_t val) {
     if (scc[ch].wreg[W_MISC]&WR14_LOOPBACK) {
         scc_receive(ch, val);
     } else {
-        /* send to real world */
+        scc_host_write(ch, val);
     }
 }
 
@@ -379,6 +526,22 @@ void SCC_IO_Handler(void) {
                 }
                 CycInt_AddCyclesEvent(50, EVENT_SCC_IO);
             }
+        }
+    }
+
+    /* Feed host input into idle, enabled receivers and keep polling */
+    if (scc_host_rx) {
+        for (i = 0; i < 2; i++) {
+            uint8_t c;
+            if ((scc[i].wreg[W_RECCONT]&WR3_RXENABLE) &&
+                !(scc[i].rreg[R_STATUS]&RR0_RXAVAIL) &&
+                !(i == 1 && ConfigureParams.Tablet.nTabletType) &&
+                scc_host_read(i, &c)) {
+                scc_receive(i, c);
+            }
+        }
+        if (!CycInt_EventPending(EVENT_SCC_IO)) {
+            CycInt_AddCyclesEvent(SCC_HOST_POLL_CYCLES, EVENT_SCC_IO);
         }
     }
 }

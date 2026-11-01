@@ -178,6 +178,10 @@ static bool DlgAlert_ShowDlg(const char *text)
  */
 bool DlgAlert_Notice(const char *text)
 {
+	if (!bShowDialogs) {
+		fprintf(stderr, "Notice: %s\n", text);
+		return true;
+	}
 #ifdef ALERT_HOOKS
 	if (!Main_UnPauseEmulation())
 		Main_PauseEmulation(true);
@@ -204,6 +208,10 @@ bool DlgAlert_Notice(const char *text)
  */
 bool DlgAlert_Query(const char *text)
 {
+	if (!bShowDialogs) {
+		fprintf(stderr, "Query (answered cancel): %s\n", text);
+		return false;
+	}
 #ifdef ALERT_HOOKS
 	if(!bInFullScreen)
 		return HookedAlertQuery(text);

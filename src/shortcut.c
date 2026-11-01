@@ -226,6 +226,7 @@ bool Shortcut_Invoke(const char *shortcut)
 	} shortcuts[] = {
 		{ SHORTCUT_MOUSEGRAB, "mousegrab" },
 		{ SHORTCUT_COLDRESET, "coldreset" },
+		{ SHORTCUT_SCREENSHOT, "screenshot" },
 		{ SHORTCUT_QUIT, "quit" },
 		{ SHORTCUT_NONE, NULL }
 	};

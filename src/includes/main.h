@@ -70,6 +70,16 @@ extern bool Main_UnPauseEmulation(void);
 extern void Main_Halt(void);
 extern void Main_HaltDialog(void);
 extern void Main_RequestQuit(bool confirm);
+extern void Main_SetQuitValue(int exitval);
+extern void Main_SetRunTimeout(int seconds);
+extern void Main_SetExitFile(const char *path);
+
+/* Process exit values */
+#define QUIT_OK            0
+#define QUIT_ERROR         1    /* bad command line or configuration */
+#define QUIT_MISSING_FILE  2    /* ROM, disk image or directory not found */
+#define QUIT_CPU_HALT      3
+#define QUIT_TIMEOUT       124  /* same as coreutils timeout(1) */
 extern void Main_EventHandler(void);
 extern void Main_ErrorExit(const char *msg1, const char *msg2, int errval);
 extern void Main_SpeedReset(void);

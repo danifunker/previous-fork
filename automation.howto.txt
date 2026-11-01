@@ -1,0 +1,105 @@
+NOTE: The command line options, the control FIFO / socket and the serial port
+      connections described here follow Hatari's (see "previous --help" and
+      Hatari's manual). They are meant for automated testing: running a guest
+      without a window, without dialogs waiting for a click, and with an exit
+      value a script can act on.
+
+
+HOWTO: Run Previous without a window
+
+   SDL selects its "dummy" drivers when asked via the environment, as in
+   Hatari's test scripts:
+
+      SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy previous --dialogs off ...
+
+   "--dialogs off" makes sure nothing waits for user input: the configuration
+   dialog is not shown at startup, alerts are only logged, questions are
+   answered with "cancel", and a missing ROM, disk image or directory ends
+   the program. Screenshots still work (see below), so the screen of a
+   headless guest can be inspected.
+
+
+HOWTO: Configure the machine from the command line
+
+   Options are applied after the configuration file, so a run can start from
+   a known file ("-c file.cfg") and change only what it needs:
+
+      previous --dialogs off --machine station --memsize 32 \
+               --scsi 0=boot.hda --scsi-ro 1=test.img --boot scsi
+
+   Use "--saveconfig" to write the resulting configuration and quit.
+
+
+HOWTO: End a run and get a result
+
+   Exit values:   0  ok (also --exit-when / --exit-on)
+                  1  bad option or configuration
+                  2  ROM, disk image or directory not found (--dialogs off)
+                  3  CPU halted (--dialogs off)
+                124  --timeout reached
+
+   --timeout <seconds>  quit after the given time (wall clock)
+   --exit-when <file>   quit as soon as the file exists, e.g. a file the guest
+                        writes to a directory shared with --nfs. A stale file
+                        is removed at startup.
+   --exit-on <text>     quit as soon as the guest sends the text on a serial
+                        port, e.g.  echo DONE > /dev/ttya
+
+
+HOWTO: Connect the serial ports to the host
+
+   --scc-a-in / --scc-a-out and --scc-b-in / --scc-b-out connect the two
+   serial ports (ttya and ttyb in NeXTSTEP) to files, FIFOs or tty devices.
+   Giving the same tty device for input and output opens it once for both.
+   The output file is created/truncated. When the output is a FIFO, open its
+   reading end before starting Previous.
+
+      previous ... --scc-a-out serial.log --exit-on "TESTS PASSED"
+
+
+HOWTO: Control a running Previous
+
+   --cmd-fifo <file>         Previous creates the FIFO and reads commands
+   --control-socket <file>   Previous connects to the given Unix socket
+
+   Commands, one per line:
+      previous-option <command line options>   e.g. --scsi 2=other.img
+      previous-debug <debugger command>        e.g. r, m 0x4000000 64
+      previous-shortcut <name>                 coldreset, screenshot, quit,
+                                               mousegrab
+      previous-stop / previous-cont            stop / continue emulation
+
+   Screenshots are written to the --screenshot-dir directory (which is also
+   the printer output directory).
+
+
+HOWTO: Run commands inside a NeXTSTEP guest
+
+   A test script can drive a shell in the guest through serial port A.
+
+1. Prepare a copy of a NeXTSTEP boot disk once. Add these lines to the end of
+   /private/etc/rc.local on that disk:
+
+      (echo ''; echo 'PREVIOUS-READY') > /dev/ttya
+      /bin/sh -c 'stty -echo; exec /bin/sh -i' < /dev/ttya > /dev/ttya 2>&1 &
+
+   This gives anyone with access to serial port A a root shell, so only use
+   such a disk for testing.
+
+2. Create two FIFOs, open the reading end of the output FIFO, then start
+   Previous with them (use a fresh copy of the boot disk for each run, the
+   guest writes to it):
+
+      mkfifo to-guest from-guest
+      SDL_VIDEODRIVER=dummy previous --dialogs off --sound off \
+          --scc-a-in to-guest --scc-a-out from-guest --cmd-fifo control \
+          --machine station --memsize 32 --boot scsi \
+          --scsi 0=boot-copy.hda --scsi-ro 1=test.img
+
+3. Wait for the line PREVIOUS-READY on from-guest, then write shell commands
+   to to-guest and read their output from from-guest. Lines end in CR LF.
+   NeXTSTEP's root shell prints "# " as part of its prompt even when PS1 is
+   set; setting PS1 to a unique string makes the prompt easy to strip.
+   Appending  echo END $?  to each command gives its exit value.
+
+4. Stop Previous with:  echo previous-shortcut quit > control

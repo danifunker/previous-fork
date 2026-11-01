@@ -291,6 +291,18 @@ static const struct Config_Tag configs_Ethernet[] =
 	{ NULL , Error_Tag, NULL }
 };
 
+/* Used to load/save serial port options */
+static const struct Config_Tag configs_Serial[] =
+{
+	{ "bEnableSccA", Bool_Tag, &ConfigureParams.Serial.EnableScc[0] },
+	{ "szSccAInFileName", String_Tag, ConfigureParams.Serial.SccInFileName[0] },
+	{ "szSccAOutFileName", String_Tag, ConfigureParams.Serial.SccOutFileName[0] },
+	{ "bEnableSccB", Bool_Tag, &ConfigureParams.Serial.EnableScc[1] },
+	{ "szSccBInFileName", String_Tag, ConfigureParams.Serial.SccInFileName[1] },
+	{ "szSccBOutFileName", String_Tag, ConfigureParams.Serial.SccOutFileName[1] },
+	{ NULL , Error_Tag, NULL }
+};
+
 /* Used to load/save ROM options */
 static const struct Config_Tag configs_Rom[] =
 {
@@ -446,6 +458,13 @@ void Configuration_SetDefault(void)
 		ConfigureParams.Floppy.drive[i].bDriveConnected = false;
 		ConfigureParams.Floppy.drive[i].bDiskInserted = false;
 		ConfigureParams.Floppy.drive[i].bWriteProtected = false;
+	}
+
+	/* Set defaults for serial ports (not connected to the host) */
+	for (i = 0; i < CNF_SCC_CHANNELS; i++) {
+		ConfigureParams.Serial.EnableScc[i] = false;
+		ConfigureParams.Serial.SccInFileName[i][0] = '\0';
+		ConfigureParams.Serial.SccOutFileName[i][0] = '\0';
 	}
 
 	/* Set defaults for Ethernet */
@@ -1031,6 +1050,7 @@ void Configuration_Load(const char *psFileName)
 	Configuration_LoadSection(psFileName, configs_SCSI, "[HardDisk]");
 	Configuration_LoadSection(psFileName, configs_MO, "[MagnetoOptical]");
 	Configuration_LoadSection(psFileName, configs_Floppy, "[Floppy]");
+	Configuration_LoadSection(psFileName, configs_Serial, "[Serial]");
 	Configuration_LoadSection(psFileName, configs_Ethernet, "[Ethernet]");
 	Configuration_LoadSection(psFileName, configs_Rom, "[ROM]");
 	Configuration_LoadSection(psFileName, configs_Printer, "[Printer]");
@@ -1082,6 +1102,7 @@ void Configuration_Save(void)
 	Configuration_SaveSection(sConfigFileName, configs_SCSI, "[HardDisk]");
 	Configuration_SaveSection(sConfigFileName, configs_MO, "[MagnetoOptical]");
 	Configuration_SaveSection(sConfigFileName, configs_Floppy, "[Floppy]");
+	Configuration_SaveSection(sConfigFileName, configs_Serial, "[Serial]");
 	Configuration_SaveSection(sConfigFileName, configs_Ethernet, "[Ethernet]");
 	Configuration_SaveSection(sConfigFileName, configs_Rom, "[ROM]");
 	Configuration_SaveSection(sConfigFileName, configs_Printer, "[Printer]");

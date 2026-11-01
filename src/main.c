@@ -35,6 +35,9 @@ const char Main_fileid[] = "Previous main.c";
 #include "host.h"
 #include "grab.h"
 #include "dimension.hpp"
+#include "options.h"
+#include "control.h"
+#include "scc.h"
 
 #include "hatari-glue.h"
 #include "NextBus.hpp"
@@ -45,6 +48,11 @@ const char Main_fileid[] = "Previous main.c";
 
 volatile bool bQuitProgram = false;            /* Flag to quit program cleanly */
 volatile bool bEmulationActive = false;        /* Do not run emulation during initialization */
+
+static int    nQuitValue = QUIT_OK;            /* exit value */
+static int    nRunTimeout = 0;                 /* --timeout seconds, 0 = none */
+static char  *sExitFile = NULL;                /* --exit-when file */
+static time_t tRunStart;
 
 #ifndef ENABLE_RENDERING_THREAD
 static thread_t*    nextThread;
@@ -169,7 +177,9 @@ bool Main_UnPauseEmulation(void) {
 void Main_HaltDialog(void) {
 	Main_PauseEmulation(true);
 	Log_Printf(LOG_WARN, "Fatal error: CPU halted!");
-	if (!DlgAlert_Query("Fatal error: CPU halted!\n\nPress OK to restart CPU or cancel to quit.")) {
+	if (!bShowDialogs) {
+		Main_SetQuitValue(QUIT_CPU_HALT);
+	} else if (!DlgAlert_Query("Fatal error: CPU halted!\n\nPress OK to restart CPU or cancel to quit.")) {
 		Main_RequestQuit(false);
 	}
 	Main_UnPauseEmulation();
@@ -189,7 +199,7 @@ void Main_Halt(void) {
 void Main_RequestQuit(bool confirm) {
 	bool bWasActive;
 
-	if (confirm) {
+	if (confirm && bShowDialogs) {
 		bWasActive = Main_PauseEmulation(true);
 		bQuitProgram = false;	/* if set true, dialog exits */
 		bQuitProgram = DlgAlert_Query("All unsaved data will be lost.\nDo you really want to quit?");
@@ -203,6 +213,49 @@ void Main_RequestQuit(bool confirm) {
 	if (bQuitProgram) {
 		/* Assure that CPU core shuts down */
 		M68000_Stop();
+	}
+}
+
+/*-----------------------------------------------------------------------*/
+/**
+ * Set exit value and quit. The first caller decides the exit value.
+ */
+void Main_SetQuitValue(int exitval) {
+	if (!bQuitProgram) {
+		nQuitValue = exitval;
+	}
+	bQuitProgram = true;
+	M68000_Stop();
+}
+
+/**
+ * Quit with QUIT_TIMEOUT after the given number of seconds.
+ */
+void Main_SetRunTimeout(int seconds) {
+	nRunTimeout = seconds;
+}
+
+/**
+ * Quit with QUIT_OK as soon as the given file exists.
+ */
+void Main_SetExitFile(const char *path) {
+	free(sExitFile);
+	sExitFile = path ? strdup(path) : NULL;
+}
+
+static void Main_CheckRunLimits(void) {
+	static int count = 0;
+
+	if (++count < 50)       /* 4 times a second */
+		return;
+	count = 0;
+
+	if (sExitFile && File_Exists(sExitFile)) {
+		Log_Printf(LOG_WARN, "Exit file '%s' found, quitting.\n", sExitFile);
+		Main_SetQuitValue(QUIT_OK);
+	} else if (nRunTimeout && difftime(time(NULL), tRunStart) >= nRunTimeout) {
+		Log_Printf(LOG_WARN, "Timeout of %d seconds reached, quitting.\n", nRunTimeout);
+		Main_SetQuitValue(QUIT_TIMEOUT);
 	}
 }
 
@@ -237,6 +290,10 @@ void Main_EventHandler(void) {
 		Statusbar_UpdateInfo();
 		statusBarUpdate = 0;
 	}
+
+	/* check remote process control and unattended run limits */
+	Control_CheckUpdates();
+	Main_CheckRunLimits();
 
 #ifdef ENABLE_RENDERING_THREAD
 	GuiEvent_EventHandler();
@@ -311,7 +368,7 @@ static void Main_Loop(void) {
  * @return true if configuration is ready, false if we need to quit
  */
 static bool Main_StartMenu(void) {
-	if (!File_Exists(sConfigFileName) || ConfigureParams.ConfigDialog.bShowConfigDialogAtStartup) {
+	if (bShowDialogs && (!File_Exists(sConfigFileName) || ConfigureParams.ConfigDialog.bShowConfigDialogAtStartup)) {
 		Dialog_DoProperty();
 	}
 	if (!bQuitProgram) {
@@ -345,6 +402,9 @@ static bool Main_Init(void) {
 	/* Done as last, needs CPU & DSP running... */
 	DebugUI_Init();
 
+	/* Connect serial ports to host files, if configured */
+	SCC_Init();
+
 	/* Call menu at startup */
 	if (Main_StartMenu()) {
 		/* Reset emulated machine */
@@ -366,6 +426,8 @@ static void Main_UnInit(void) {
 	host_semaphore_destroy(pauseFlag);
 #endif
 	Sound_Pause(true);
+	SCC_UnInit();
+	Control_RemoveFifo();
 	Printer_UnInit();
 	Ethernet_UnInit();
 	IoMem_UnInit();
@@ -471,8 +533,11 @@ void Main_ErrorExit(const char *msg1, const char *msg2, int errval)
 	UI_UnInit();
 
 #ifdef WIN32
-	fputs("<press Enter to exit>\n", stderr);
-	(void)fgetc(stdin);
+	/* unattended runs (--dialogs off) must not wait for a key */
+	if (bShowDialogs) {
+		fputs("<press Enter to exit>\n", stderr);
+		(void)fgetc(stdin);
+	}
 #endif
 	exit(errval);
 }
@@ -499,6 +564,20 @@ int main(int argc, char *argv[])
 	/* Now load the values from the configuration file */
 	Main_LoadInitialConfig();
 
+	/* Check for any passed parameters */
+	if (!Opt_ParseParameters(argc, (const char * const *)argv))
+	{
+		Control_RemoveFifo();
+		Main_ErrorExit(NULL, NULL, QUIT_ERROR);
+	}
+
+	/* A stale exit file must not end a new run */
+	if (sExitFile && File_Exists(sExitFile) && remove(sExitFile) != 0)
+	{
+		Main_ErrorExit("Can't remove stale exit file", sExitFile, QUIT_ERROR);
+	}
+	tRunStart = time(NULL);
+
 	/* monitor type option might require "reset" -> true */
 	Configuration_Apply(true);
 
@@ -524,5 +603,5 @@ int main(int argc, char *argv[])
 	/* Un-init emulation system */
 	Main_UnInit();
 
-	return 0;
+	return nQuitValue;
 }

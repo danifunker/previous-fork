@@ -10,6 +10,8 @@
 
 #include "configuration.h"
 
+extern bool bShowDialogs;
+
 /* prototypes for gui-sdl/dlg*.c functions: */
 extern int  Dialog_MainDlg(bool *bReset, bool *bLoadedSnapshot);
 extern void Dialog_AboutDlg(void);
