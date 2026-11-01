@@ -16,6 +16,12 @@ env:
 jobs:
   macos:
     runs-on: macos-latest
+    outputs:
+      signed: ${{ steps.sign.outputs.signed }}
+    env:
+      # Developer ID signing + notarization when the secrets are set
+      # (scripts/setup-macos-signing.sh), ad-hoc signing otherwise.
+      HAS_SIGNING_CERT: ${{ secrets.MACOS_CERTIFICATE != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -44,17 +50,93 @@ jobs:
           # point the executable at the bundled SDL
           old=$(otool -L $app/Contents/MacOS/Previous | awk '/libSDL3/ {print $1}')
           [ "$old" = "@rpath/libSDL3.0.dylib" ] || install_name_tool -change "$old" @rpath/libSDL3.0.dylib $app/Contents/MacOS/Previous
-          codesign --force --deep -s - "$app"
           otool -L $app/Contents/MacOS/Previous
           lipo -info $app/Contents/MacOS/Previous
           ! otool -L $app/Contents/MacOS/Previous | grep -E "/opt/homebrew|/usr/local"
+          # stage everything that gets signed
+          mkdir -p dist-mac
+          cp -R $app dist-mac/
+          cp build/src/ditool/ditool dist-mac/
+
+      - name: Import signing certificate
+        if: env.HAS_SIGNING_CERT == 'true'
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+        run: |
+          KEYCHAIN_PATH=$RUNNER_TEMP/signing.keychain-db
+          KEYCHAIN_PWD=$(openssl rand -base64 24)
+          security create-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
+          printf '%s' "$MACOS_CERTIFICATE" | base64 --decode > $RUNNER_TEMP/cert.p12
+          security import $RUNNER_TEMP/cert.p12 -P "$MACOS_CERTIFICATE_PWD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          rm -f $RUNNER_TEMP/cert.p12
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PWD" "$KEYCHAIN_PATH" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | awk -F'"' '/Developer ID Application/ {print $2; exit}')
+          [ -n "$IDENTITY" ] || { echo "no Developer ID Application identity in the certificate"; exit 1; }
+          echo "SIGN_IDENTITY=$IDENTITY" >> $GITHUB_ENV
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> $GITHUB_ENV
+
+      - name: Sign
+        id: sign
+        run: |
+          app=dist-mac/Previous.app
+          if [ -n "${SIGN_IDENTITY:-}" ]; then
+            echo "signing with: $SIGN_IDENTITY"
+            opts="--force --timestamp --options runtime -s"
+            # inner code first, the app last (no --deep)
+            codesign $opts "$SIGN_IDENTITY" $app/Contents/Frameworks/libSDL3.0.dylib
+            codesign $opts "$SIGN_IDENTITY" dist-mac/ditool
+            codesign $opts "$SIGN_IDENTITY" --entitlements macos/previous.entitlements $app
+            echo "signed=developer-id" >> $GITHUB_OUTPUT
+          else
+            echo "no signing certificate configured: ad-hoc signing"
+            codesign --force -s - $app/Contents/Frameworks/libSDL3.0.dylib
+            codesign --force -s - dist-mac/ditool
+            codesign --force -s - --entitlements macos/previous.entitlements $app
+            echo "signed=ad-hoc" >> $GITHUB_OUTPUT
+          fi
+          codesign --verify --strict --verbose=2 $app
+          codesign --verify --strict --verbose=2 dist-mac/ditool
+
+      - name: Notarize
+        if: env.HAS_SIGNING_CERT == 'true'
+        env:
+          APPLE_ID: ${{ secrets.MACOS_NOTARIZE_APPLE_ID }}
+          APPLE_PWD: ${{ secrets.MACOS_NOTARIZE_PASSWORD }}
+          TEAM_ID: ${{ secrets.MACOS_TEAM_ID }}
+        run: |
+          # the app and ditool go to Apple together; the ticket is stapled
+          # to the app (a bare executable can't hold one, Gatekeeper looks
+          # it up online)
+          ditto -c -k --keepParent dist-mac notarize.zip
+          set +e
+          out=$(xcrun notarytool submit notarize.zip --apple-id "$APPLE_ID" --password "$APPLE_PWD" \
+                --team-id "$TEAM_ID" --wait --timeout 30m 2>&1)
+          r=$?
+          set -e
+          echo "$out"
+          id=$(echo "$out" | awk '/^ *id:/ {print $2; exit}')
+          if [ $r -ne 0 ] || ! echo "$out" | grep -q "status: Accepted"; then
+            [ -n "$id" ] && xcrun notarytool log "$id" --apple-id "$APPLE_ID" --password "$APPLE_PWD" --team-id "$TEAM_ID"
+            exit 1
+          fi
+          xcrun stapler staple dist-mac/Previous.app
+          xcrun stapler validate dist-mac/Previous.app
+          spctl --assess --type execute --verbose dist-mac/Previous.app
+
+      - name: Remove signing keychain
+        if: always() && env.KEYCHAIN_PATH != ''
+        run: security delete-keychain "$KEYCHAIN_PATH" || true
 
       - name: Smoke test
         env:
           SDL_VIDEODRIVER: dummy
           SDL_AUDIODRIVER: dummy
         run: |
-          P=build/src/Previous.app/Contents/MacOS/Previous
+          P=dist-mac/Previous.app/Contents/MacOS/Previous
           set +e
           $P --help >/dev/null; r=$?; echo "--help: $r"; [ $r -eq 1 ] || exit 1
           $P --dialogs off --sound off --timeout 5 >/dev/null 2>&1; r=$?; echo "--timeout: $r"; [ $r -eq 124 ] || exit 1
@@ -65,9 +147,9 @@ jobs:
         run: |
           d=previous-macos-universal
           mkdir $d
-          cp -R build/src/Previous.app $d/
-          cp build/src/ditool/ditool $d/
-          cp README.md gpl.txt readme.previous.txt automation.howto.txt *.howto.txt $d/ 2>/dev/null || true
+          ditto dist-mac/Previous.app $d/Previous.app
+          cp dist-mac/ditool $d/
+          cp README.md gpl.txt readme.previous.txt *.howto.txt $d/
           ditto -c -k --keepParent $d $d.zip
 
       - uses: actions/upload-artifact@v4
@@ -207,6 +289,7 @@ jobs:
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
+          MAC_SIGNED: ${{ needs.macos.outputs.signed }}
         run: |
           ls -la dist
           cat > notes.md <<'EOF'
@@ -215,16 +298,19 @@ jobs:
 
           | Archive | Platform |
           |---|---|
-          | `previous-macos-universal.zip` | macOS 10.13+, Apple Silicon and Intel (`Previous.app`, ad-hoc signed) |
+          | `previous-macos-universal.zip` | macOS 10.13+, Apple Silicon and Intel (`Previous.app`) |
           | `previous-linux-x86_64.tar.gz` | Linux x86_64 (SDL3 built in) |
           | `previous-linux-arm64.tar.gz` | Linux arm64 (SDL3 built in) |
           | `previous-windows-x86_64.zip` | Windows x86_64 |
 
           The ROM images are included. These builds leave out libpng (screenshots are TIFF),
           readline and pcap (networking uses the built-in SLiRP).
-
-          macOS: the app isn't notarized. If macOS refuses to open it, run
-          `xattr -dr com.apple.quarantine Previous.app`.
           EOF
+          if [ "$MAC_SIGNED" = "developer-id" ]; then
+            echo "macOS: signed with a Developer ID and notarized by Apple." >> notes.md
+          else
+            printf '%s\n' "macOS: not notarized (ad-hoc signed). If macOS refuses to open the app, run" \
+              '`xattr -dr com.apple.quarantine Previous.app`.' >> notes.md
+          fi
           gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" \
             --title "Previous $GITHUB_REF_NAME" --notes-file notes.md

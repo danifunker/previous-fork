@@ -31,6 +31,22 @@ from Hatari 2.6.1 where noted.
 
 To follow upstream, add a new snapshot to `upstream` and rebase `main` on it.
 
+## Releases
+
+Pushing a tag such as `r1862-1` builds macOS (universal app), Linux (x86_64,
+arm64) and Windows (x86_64) archives and publishes them as a GitHub release
+(`.github/workflows/release.yml`). The Actions tab can also run it by hand,
+which builds the archives without releasing them.
+
+The macOS app is signed with a Developer ID and notarized when the repository
+has the signing secrets, and ad-hoc signed otherwise. To add the secrets:
+
+    scripts/setup-macos-signing.sh --p12 DeveloperID.p12
+
+It asks for the certificate password, the Apple ID and an app-specific
+password (or reads them from the environment or `--env-file`), checks them,
+and stores them as repository secrets. See `--help`.
+
 ## License
 
 Previous is free software under the GNU General Public License, version 2 or
