@@ -15,7 +15,8 @@ HOWTO: Run Previous without a window
    "--dialogs off" makes sure nothing waits for user input: the configuration
    dialog is not shown at startup, alerts are only logged, questions are
    answered with "cancel", and a missing ROM, disk image or directory ends
-   the program. Screenshots still work (see below), so the screen of a
+   the program. Give it as the first option: on Windows, an error in
+   a later option (or --help) otherwise ends with "press Enter to exit". Screenshots still work (see below), so the screen of a
    headless guest can be inspected.
 
 

@@ -306,7 +306,9 @@ jobs:
         run: |
           P=previous-windows-x86_64/previous.exe
           set +e
-          $P --help </dev/null >/dev/null 2>&1; r=$?; echo "--help: $r"; [ $r -eq 1 ] || exit 1
+          # --dialogs off first: on Windows, exiting after --help would otherwise
+          # wait for Enter in a newly opened console
+          $P --dialogs off --help </dev/null >/dev/null 2>&1; r=$?; echo "--help: $r"; [ $r -eq 1 ] || exit 1
           $P --dialogs off --sound off --timeout 5 </dev/null >/dev/null 2>&1; r=$?; echo "--timeout: $r"; [ $r -eq 124 ] || exit 1
           (sleep 5; touch done) & $P --dialogs off --sound off --exit-when done --timeout 60 </dev/null >/dev/null 2>&1; r=$?
           echo "--exit-when: $r"; [ $r -eq 0 ] || exit 1
