@@ -324,8 +324,9 @@ jobs:
           path: previous-windows-x86_64.zip
           archive: false
 
+  # Collects the archives on every run (so a build-only run tests this too);
+  # publishes only for a pushed tag or a manual run with release_tag.
   release:
-    if: startsWith(github.ref, 'refs/tags/') || inputs.release_tag != ''
     needs: [macos, linux, windows]
     runs-on: ubuntu-latest
     steps:
@@ -333,8 +334,24 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+          # keep the uploaded archives as they are (don't unpack the .zip files)
+          skip-decompress: true
+
+      - name: Check the archives
+        run: |
+          ls -la dist
+          for f in previous-macos-universal.zip previous-linux-x86_64.tar.gz \
+                   previous-linux-arm64.tar.gz previous-windows-x86_64.zip; do
+            [ -f "dist/$f" ] || { echo "::error::missing archive: $f"; exit 1; }
+          done
+          [ "$(ls dist | wc -l)" -eq 4 ] || { echo "::error::unexpected files in dist"; exit 1; }
+          unzip -tq dist/previous-macos-universal.zip
+          unzip -tq dist/previous-windows-x86_64.zip
+          for f in dist/*.tar.gz; do tar tzf "$f" >/dev/null; done
+          echo "all 4 archives present and intact"
 
       - name: Create release
+        if: startsWith(github.ref, 'refs/tags/') || inputs.release_tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
           MAC_SIGNED: ${{ needs.macos.outputs.signed }}
