@@ -2,10 +2,21 @@ name: Build and release
 
 # Push a tag (e.g. r1862-1) to build all platforms and publish a GitHub
 # release. "Run workflow" on the Actions tab builds the artifacts only.
+#
+# macOS signing mode: the "signing" input of a manual run, else the
+# repository variable MACOS_SIGNING, else ad-hoc.
+#   ad-hoc             no certificate (default)
+#   developer-signing  Developer ID + notarization (MACOS_* secrets)
 on:
   push:
     tags: ['r*', 'v*']
   workflow_dispatch:
+    inputs:
+      signing:
+        description: macOS signing
+        type: choice
+        options: [ad-hoc, developer-signing]
+        default: ad-hoc
 
 permissions:
   contents: write
@@ -19,10 +30,23 @@ jobs:
     outputs:
       signed: ${{ steps.sign.outputs.signed }}
     env:
-      # Developer ID signing + notarization when the secrets are set
-      # (MACOS_* secrets, see README.md), ad-hoc signing otherwise.
+      SIGNING: ${{ inputs.signing || vars.MACOS_SIGNING || 'ad-hoc' }}
       HAS_SIGNING_CERT: ${{ secrets.MACOS_CERTIFICATE != '' }}
     steps:
+      - name: Check signing mode
+        run: |
+          echo "macOS signing mode: $SIGNING"
+          case $SIGNING in
+            ad-hoc) ;;
+            developer-signing)
+              [ "$HAS_SIGNING_CERT" = true ] ||
+                { echo "::error::developer-signing needs the MACOS_* secrets (see README.md)"; exit 1; } ;;
+            mac-app-store)
+              echo "::error::mac-app-store isn't supported for Previous: the Mac App Store's terms conflict with the GPL"
+              exit 1 ;;
+            *) echo "::error::unknown signing mode '$SIGNING' (ad-hoc or developer-signing)"; exit 1 ;;
+          esac
+
       - uses: actions/checkout@v4
 
       - name: Build SDL3 (universal, shared)
@@ -59,7 +83,7 @@ jobs:
           cp build/src/ditool/ditool dist-mac/
 
       - name: Import signing certificate
-        if: env.HAS_SIGNING_CERT == 'true'
+        if: env.SIGNING == 'developer-signing'
         env:
           MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
           MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
@@ -90,7 +114,7 @@ jobs:
             codesign $opts "$SIGN_IDENTITY" $app/Contents/Frameworks/libSDL3.0.dylib
             codesign $opts "$SIGN_IDENTITY" dist-mac/ditool
             codesign $opts "$SIGN_IDENTITY" --entitlements macos/previous.entitlements $app
-            echo "signed=developer-id" >> $GITHUB_OUTPUT
+            echo "signed=developer-signing" >> $GITHUB_OUTPUT
           else
             echo "no signing certificate configured: ad-hoc signing"
             codesign --force -s - $app/Contents/Frameworks/libSDL3.0.dylib
@@ -102,7 +126,7 @@ jobs:
           codesign --verify --strict --verbose=2 dist-mac/ditool
 
       - name: Notarize
-        if: env.HAS_SIGNING_CERT == 'true'
+        if: env.SIGNING == 'developer-signing'
         env:
           APPLE_ID: ${{ secrets.MACOS_NOTARIZE_APPLE_ID }}
           APPLE_PWD: ${{ secrets.MACOS_NOTARIZE_PASSWORD }}
@@ -322,7 +346,7 @@ jobs:
           The ROM images are included. These builds leave out libpng (screenshots are TIFF),
           readline and pcap (networking uses the built-in SLiRP).
           EOF
-          if [ "$MAC_SIGNED" = "developer-id" ]; then
+          if [ "$MAC_SIGNED" = "developer-signing" ]; then
             echo "macOS: signed with a Developer ID and notarized by Apple." >> notes.md
           else
             printf '%s\n' "macOS: not notarized (ad-hoc signed). If macOS refuses to open the app, run" \

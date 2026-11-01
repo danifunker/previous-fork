@@ -38,15 +38,21 @@ arm64) and Windows (x86_64) archives and publishes them as a GitHub release
 (`.github/workflows/release.yml`). The Actions tab can also run it by hand,
 which builds the archives without releasing them.
 
-The macOS app is signed with a Developer ID and notarized when the repository
-has these secrets, and ad-hoc signed otherwise:
+The macOS signing mode is the "signing" choice of a manual run, else the
+repository variable `MACOS_SIGNING`, else `ad-hoc`:
 
-- `MACOS_CERTIFICATE` (Developer ID Application `.p12`, base64),
-  `MACOS_CERTIFICATE_PWD`, `MACOS_TEAM_ID`
-- notarization, either `MACOS_NOTARIZE_APPLE_ID` + `MACOS_NOTARIZE_PASSWORD`
-  (app-specific password), or an App Store Connect API key:
-  `MACOS_NOTARIZE_API_KEY` (`.p8`, base64), `MACOS_NOTARIZE_API_KEY_ID`,
-  `MACOS_NOTARIZE_API_ISSUER`
+- `ad-hoc` (default): no certificate needed. macOS asks for confirmation the
+  first time the app is opened.
+- `developer-signing`: Developer ID signature and Apple notarization, so the
+  app opens without warnings. Needs these secrets:
+  `MACOS_CERTIFICATE` (Developer ID Application `.p12`, base64),
+  `MACOS_CERTIFICATE_PWD`, `MACOS_TEAM_ID`, and for notarization either
+  `MACOS_NOTARIZE_API_KEY` (App Store Connect `.p8`, base64),
+  `MACOS_NOTARIZE_API_KEY_ID`, `MACOS_NOTARIZE_API_ISSUER`, or
+  `MACOS_NOTARIZE_APPLE_ID` + `MACOS_NOTARIZE_PASSWORD` (app-specific password).
+
+The Mac App Store isn't an option for this project: its terms conflict with
+the GPL.
 
 ## License
 
