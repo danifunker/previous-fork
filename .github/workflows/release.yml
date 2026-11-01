@@ -1,0 +1,230 @@
+name: Build and release
+
+# Push a tag (e.g. r1862-1) to build all platforms and publish a GitHub
+# release. "Run workflow" on the Actions tab builds the artifacts only.
+on:
+  push:
+    tags: ['r*', 'v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  SDL3_VERSION: 3.2.0
+
+jobs:
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build SDL3 (universal, shared)
+        run: |
+          curl -sSL -o sdl.tgz https://github.com/libsdl-org/SDL/releases/download/release-$SDL3_VERSION/SDL3-$SDL3_VERSION.tar.gz
+          tar xzf sdl.tgz
+          cmake -S SDL3-$SDL3_VERSION -B sdl-build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=10.13 \
+            -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TESTS=OFF -DCMAKE_INSTALL_PREFIX=$HOME/sdl3
+          cmake --build sdl-build -j3
+          cmake --install sdl-build
+
+      - name: Build Previous
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=$HOME/sdl3 \
+            -DCMAKE_DISABLE_FIND_PACKAGE_PNG=ON -DCMAKE_DISABLE_FIND_PACKAGE_Readline=ON
+          cmake --build build -j3
+
+      - name: Make the app bundle self-contained
+        run: |
+          app=build/src/Previous.app
+          fw=$app/Contents/Frameworks
+          rm -rf "$fw" && mkdir -p "$fw"
+          cp $HOME/sdl3/lib/libSDL3.0.dylib "$fw/"
+          # point the executable at the bundled SDL
+          old=$(otool -L $app/Contents/MacOS/Previous | awk '/libSDL3/ {print $1}')
+          [ "$old" = "@rpath/libSDL3.0.dylib" ] || install_name_tool -change "$old" @rpath/libSDL3.0.dylib $app/Contents/MacOS/Previous
+          codesign --force --deep -s - "$app"
+          otool -L $app/Contents/MacOS/Previous
+          lipo -info $app/Contents/MacOS/Previous
+          ! otool -L $app/Contents/MacOS/Previous | grep -E "/opt/homebrew|/usr/local"
+
+      - name: Smoke test
+        env:
+          SDL_VIDEODRIVER: dummy
+          SDL_AUDIODRIVER: dummy
+        run: |
+          P=build/src/Previous.app/Contents/MacOS/Previous
+          set +e
+          $P --help >/dev/null; r=$?; echo "--help: $r"; [ $r -eq 1 ] || exit 1
+          $P --dialogs off --sound off --timeout 5 >/dev/null 2>&1; r=$?; echo "--timeout: $r"; [ $r -eq 124 ] || exit 1
+          (sleep 5; touch done) & $P --dialogs off --sound off --exit-when done --timeout 60 >/dev/null 2>&1; r=$?
+          echo "--exit-when: $r"; [ $r -eq 0 ] || exit 1
+
+      - name: Package
+        run: |
+          d=previous-macos-universal
+          mkdir $d
+          cp -R build/src/Previous.app $d/
+          cp build/src/ditool/ditool $d/
+          cp README.md gpl.txt readme.previous.txt automation.howto.txt *.howto.txt $d/ 2>/dev/null || true
+          ditto -c -k --keepParent $d $d.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: previous-macos-universal
+          path: previous-macos-universal.zip
+
+  linux:
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential cmake zlib1g-dev \
+            libasound2-dev libpulse-dev libpipewire-0.3-dev libx11-dev libxext-dev libxrandr-dev \
+            libxcursor-dev libxfixes-dev libxi-dev libxss-dev libxtst-dev libxkbcommon-dev \
+            libdrm-dev libgbm-dev libgl1-mesa-dev libegl1-mesa-dev libwayland-dev wayland-protocols \
+            libdecor-0-dev libdbus-1-dev libudev-dev
+
+      - name: Build SDL3 (static)
+        run: |
+          curl -sSL -o sdl.tgz https://github.com/libsdl-org/SDL/releases/download/release-$SDL3_VERSION/SDL3-$SDL3_VERSION.tar.gz
+          tar xzf sdl.tgz
+          cmake -S SDL3-$SDL3_VERSION -B sdl-build -DCMAKE_BUILD_TYPE=Release \
+            -DSDL_SHARED=OFF -DSDL_STATIC=ON -DSDL_TESTS=OFF \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DCMAKE_INSTALL_PREFIX=$HOME/sdl3
+          cmake --build sdl-build -j"$(nproc)"
+          cmake --install sdl-build
+
+      - name: Build Previous
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=$HOME/sdl3 -DBIN2DATADIR=. \
+            -DCMAKE_DISABLE_FIND_PACKAGE_PNG=ON -DCMAKE_DISABLE_FIND_PACKAGE_Readline=ON \
+            -DCMAKE_DISABLE_FIND_PACKAGE_PCAP=ON
+          cmake --build build -j"$(nproc)"
+          ldd build/src/previous
+
+      - name: Package
+        run: |
+          d=previous-linux-${{ matrix.arch }}
+          mkdir $d
+          cp build/src/previous build/src/ditool/ditool src/*.BIN $d/
+          cp README.md gpl.txt readme.previous.txt *.howto.txt $d/
+          tar czf $d.tar.gz $d
+
+      - name: Smoke test
+        env:
+          SDL_VIDEODRIVER: dummy
+          SDL_AUDIODRIVER: dummy
+        run: |
+          P=previous-linux-${{ matrix.arch }}/previous
+          set +e
+          $P --help >/dev/null; r=$?; echo "--help: $r"; [ $r -eq 1 ] || exit 1
+          $P --dialogs off --sound off --timeout 5 >/dev/null 2>&1; r=$?; echo "--timeout: $r"; [ $r -eq 124 ] || exit 1
+          (sleep 5; touch done) & $P --dialogs off --sound off --exit-when done --timeout 60 >/dev/null 2>&1; r=$?
+          echo "--exit-when: $r"; [ $r -eq 0 ] || exit 1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: previous-linux-${{ matrix.arch }}
+          path: previous-linux-${{ matrix.arch }}.tar.gz
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-SDL3
+            mingw-w64-x86_64-zlib
+            zip
+
+      - name: Build Previous
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_DISABLE_FIND_PACKAGE_PNG=ON -DCMAKE_DISABLE_FIND_PACKAGE_Readline=ON \
+            -DCMAKE_DISABLE_FIND_PACKAGE_PCAP=ON
+          cmake --build build
+
+      - name: Package
+        run: |
+          d=previous-windows-x86_64
+          mkdir $d
+          cp build/src/previous.exe build/src/ditool/ditool.exe src/*.BIN $d/
+          # the MinGW / SDL3 DLLs the executables need
+          for exe in $d/*.exe; do ldd "$exe"; done | awk '/\/mingw64\// {print $3}' | sort -u | xargs -I{} cp {} $d/
+          cp README.md gpl.txt readme.previous.txt *.howto.txt $d/
+          ls $d
+          zip -qr $d.zip $d
+
+      - name: Smoke test
+        env:
+          SDL_VIDEODRIVER: dummy
+          SDL_AUDIODRIVER: dummy
+        run: |
+          P=previous-windows-x86_64/previous.exe
+          set +e
+          $P --help </dev/null >/dev/null 2>&1; r=$?; echo "--help: $r"; [ $r -eq 1 ] || exit 1
+          $P --dialogs off --sound off --timeout 5 </dev/null >/dev/null 2>&1; r=$?; echo "--timeout: $r"; [ $r -eq 124 ] || exit 1
+          (sleep 5; touch done) & $P --dialogs off --sound off --exit-when done --timeout 60 </dev/null >/dev/null 2>&1; r=$?
+          echo "--exit-when: $r"; [ $r -eq 0 ] || exit 1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: previous-windows-x86_64
+          path: previous-windows-x86_64.zip
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [macos, linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -la dist
+          cat > notes.md <<'EOF'
+          Previous with Hatari-style command line options, command FIFO and serial-port-to-host I/O
+          for unattended runs. See `automation.howto.txt` in each archive.
+
+          | Archive | Platform |
+          |---|---|
+          | `previous-macos-universal.zip` | macOS 10.13+, Apple Silicon and Intel (`Previous.app`, ad-hoc signed) |
+          | `previous-linux-x86_64.tar.gz` | Linux x86_64 (SDL3 built in) |
+          | `previous-linux-arm64.tar.gz` | Linux arm64 (SDL3 built in) |
+          | `previous-windows-x86_64.zip` | Windows x86_64 |
+
+          The ROM images are included. These builds leave out libpng (screenshots are TIFF),
+          readline and pcap (networking uses the built-in SLiRP).
+
+          macOS: the app isn't notarized. If macOS refuses to open it, run
+          `xattr -dr com.apple.quarantine Previous.app`.
+          EOF
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" \
+            --title "Previous $GITHUB_REF_NAME" --notes-file notes.md
