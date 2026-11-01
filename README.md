@@ -39,13 +39,14 @@ arm64) and Windows (x86_64) archives and publishes them as a GitHub release
 which builds the archives without releasing them.
 
 The macOS app is signed with a Developer ID and notarized when the repository
-has the signing secrets, and ad-hoc signed otherwise. To add the secrets:
+has these secrets, and ad-hoc signed otherwise:
 
-    scripts/setup-macos-signing.sh --p12 DeveloperID.p12
-
-It asks for the certificate password, the Apple ID and an app-specific
-password (or reads them from the environment or `--env-file`), checks them,
-and stores them as repository secrets. See `--help`.
+- `MACOS_CERTIFICATE` (Developer ID Application `.p12`, base64),
+  `MACOS_CERTIFICATE_PWD`, `MACOS_TEAM_ID`
+- notarization, either `MACOS_NOTARIZE_APPLE_ID` + `MACOS_NOTARIZE_PASSWORD`
+  (app-specific password), or an App Store Connect API key:
+  `MACOS_NOTARIZE_API_KEY` (`.p8`, base64), `MACOS_NOTARIZE_API_KEY_ID`,
+  `MACOS_NOTARIZE_API_ISSUER`
 
 ## License
 
