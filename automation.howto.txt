@@ -57,6 +57,41 @@ HOWTO: Connect the serial ports to the host
 
       previous ... --scc-a-out serial.log --exit-on "TESTS PASSED"
 
+   Reading and writing never wait: when nothing has arrived on the input,
+   the guest simply sees an idle line.
+
+
+HOWTO: Use a serial port interactively (step by step)
+
+   The easiest way to type into a serial port is a "virtual cable": a pair of
+   pseudo terminals connected to each other. Previous uses one end, a terminal
+   program the other. On macOS install socat once with "brew install socat"
+   (on Linux use the distribution's socat package).
+
+1. In a first terminal window, create the cable and leave it running:
+
+      socat -d -d pty,raw,echo=0,link=/tmp/next-a pty,raw,echo=0,link=/tmp/next-a-term
+
+2. In a second window, start Previous with serial port A on one end. Give
+   the same name for input and output, so it is opened once for both:
+
+      previous --scc-a-in /tmp/next-a --scc-a-out /tmp/next-a
+
+3. In a third window, connect a terminal program to the other end:
+
+      screen /tmp/next-a-term          (quit with Ctrl-A, then K)
+
+   In NeXTSTEP this port is /dev/ttya ("Run commands inside a NeXTSTEP
+   guest" below shows one way to get a shell on it). Port B works the same way with --scc-b-in / --scc-b-out (/dev/ttyb).
+
+   A quick look is also possible with the terminal Previous runs in:
+
+      previous --log-file prev.log --scc-a-in /dev/stdin --scc-a-out /dev/stdout
+
+   but that terminal only passes on whole lines after Enter, echoes what you
+   type, still shows SDL's messages, and Ctrl-C ends Previous. Use the
+   virtual cable for anything more.
+
 
 HOWTO: Control a running Previous
 

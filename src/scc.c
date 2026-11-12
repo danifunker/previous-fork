@@ -350,6 +350,36 @@ static void scc_hard_reset(void) {
 
 
 /* Host side of the serial ports */
+static int scc_host_rd_flags[2] = { -1, -1 };  /* file status flags before */
+static int scc_host_wr_flags[2] = { -1, -1 };  /* we set O_NONBLOCK, or -1 */
+
+/* Make sure reads and writes never block the emulator. open() alone is not
+ * enough: on macOS (and other BSDs) opening /dev/stdin, /dev/stdout or
+ * /dev/fd/N duplicates the existing descriptor and ignores O_NONBLOCK.
+ * Such a descriptor shares its flags with the shell's terminal, so the old
+ * flags are kept and restored in SCC_UnInit(). */
+static void scc_host_nonblock(int fd, int *saved) {
+    *saved = -1;
+#ifdef F_GETFL
+    if (fd >= 0) {
+        int flags = fcntl(fd, F_GETFL, 0);
+        if (flags >= 0 && !(flags & O_NONBLOCK) &&
+            fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0) {
+            *saved = flags;
+        }
+    }
+#endif
+}
+
+static void scc_host_restore(int fd, int *saved) {
+#ifdef F_SETFL
+    if (fd >= 0 && *saved >= 0) {
+        fcntl(fd, F_SETFL, *saved);
+    }
+#endif
+    *saved = -1;
+}
+
 static void scc_host_init_channel(int ch) {
     bool *enable = &ConfigureParams.Serial.EnableScc[ch];
     char *in     = ConfigureParams.Serial.SccInFileName[ch];
@@ -388,6 +418,10 @@ static void scc_host_init_channel(int ch) {
         }
     }
 
+    scc_host_nonblock(scc_host_rd[ch], &scc_host_rd_flags[ch]);
+    if (scc_host_wr[ch] != scc_host_rd[ch])
+        scc_host_nonblock(scc_host_wr[ch], &scc_host_wr_flags[ch]);
+
     if (scc_host_rd[ch] < 0 && scc_host_wr[ch] < 0)
         *enable = false;
 }
@@ -407,6 +441,8 @@ void SCC_Init(void) {
 void SCC_UnInit(void) {
     int ch;
     for (ch = 0; ch < 2; ch++) {
+        scc_host_restore(scc_host_rd[ch], &scc_host_rd_flags[ch]);
+        scc_host_restore(scc_host_wr[ch], &scc_host_wr_flags[ch]);
         if (scc_host_rd[ch] >= 0)
             close(scc_host_rd[ch]);
         if (scc_host_wr[ch] >= 0 && scc_host_wr[ch] != scc_host_rd[ch])
