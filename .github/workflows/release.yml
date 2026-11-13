@@ -5,8 +5,9 @@ name: Build and release
 # the selected branch and publishes the release. With "release_tag" empty
 # a manual run only builds; the archives are attached to the run.
 #
-# macOS signing mode: the "signing" input of a manual run, else the
-# repository variable MACOS_SIGNING, else ad-hoc.
+# macOS signing mode: the "signing" input of a manual run (unless left at
+# "repository setting"), else the repository variable MACOS_SIGNING, else
+# ad-hoc.
 #   ad-hoc             no certificate (default)
 #   developer-signing  Developer ID + notarization (MACOS_* secrets)
 on:
@@ -17,8 +18,8 @@ on:
       signing:
         description: macOS signing
         type: choice
-        options: [ad-hoc, developer-signing]
-        default: ad-hoc
+        options: [repository setting, ad-hoc, developer-signing]
+        default: repository setting
       release_tag:
         description: Release tag to create (e.g. r1862-1); empty = build only
         type: string
@@ -36,7 +37,7 @@ jobs:
     outputs:
       signed: ${{ steps.sign.outputs.signed }}
     env:
-      SIGNING: ${{ inputs.signing || vars.MACOS_SIGNING || 'ad-hoc' }}
+      SIGNING: ${{ (inputs.signing != 'repository setting' && inputs.signing) || vars.MACOS_SIGNING || 'ad-hoc' }}
       HAS_SIGNING_CERT: ${{ secrets.MACOS_CERTIFICATE != '' }}
     steps:
       - name: Check signing mode

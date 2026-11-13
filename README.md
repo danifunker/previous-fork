@@ -45,7 +45,9 @@ A manual run with "release_tag" left empty only builds; the archives are
 attached to the run (Summary page, "Artifacts").
 
 The macOS signing mode is the "signing" choice of a manual run, else the
-repository variable `MACOS_SIGNING`, else `ad-hoc`:
+repository variable `MACOS_SIGNING`, else `ad-hoc`. The choice defaults to
+"repository setting", so set `MACOS_SIGNING` once (Settings > Secrets and
+variables > Actions > Variables) and every run, manual or tag, uses it:
 
 - `ad-hoc` (default): no certificate needed. macOS asks for confirmation the
   first time the app is opened.
