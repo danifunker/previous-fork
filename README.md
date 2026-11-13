@@ -36,28 +36,25 @@ To follow upstream, add a new snapshot to `upstream` and rebase `main` on it.
 `.github/workflows/release.yml` builds macOS (universal app), Linux (x86_64,
 arm64) and Windows (x86_64) archives. To publish a release:
 
-- Actions tab > "Build and release" > "Run workflow": pick the branch and
-  signing mode, enter a new tag such as `r1862-1` in "release_tag", run. The
-  workflow builds everything, creates the tag and publishes the release.
+- Actions tab > "Build and release" > "Run workflow": pick the branch, enter
+  a new tag such as `r1862-1` in "release_tag", run. The workflow builds
+  everything, creates the tag and publishes the release.
 - Or push a tag (`git tag r1862-1 && git push origin r1862-1`).
 
 A manual run with "release_tag" left empty only builds; the archives are
 attached to the run (Summary page, "Artifacts").
 
-The macOS signing mode is the "signing" choice of a manual run, else the
-repository variable `MACOS_SIGNING`, else `ad-hoc`. The choice defaults to
-"repository setting", so set `MACOS_SIGNING` once (Settings > Secrets and
-variables > Actions > Variables) and every run, manual or tag, uses it:
+Every macOS build, release or not, is signed with a Developer ID and
+notarized by Apple, so the app opens without warnings. There is no ad-hoc
+fallback: a run fails if signing or notarization isn't possible or isn't
+accepted. It needs these repository secrets:
 
-- `ad-hoc` (default): no certificate needed. macOS asks for confirmation the
-  first time the app is opened.
-- `developer-signing`: Developer ID signature and Apple notarization, so the
-  app opens without warnings. Needs these secrets:
-  `MACOS_CERTIFICATE` (Developer ID Application `.p12`, base64),
-  `MACOS_CERTIFICATE_PWD`, `MACOS_TEAM_ID`, and for notarization either
-  `MACOS_NOTARIZE_API_KEY` (App Store Connect `.p8`, base64),
-  `MACOS_NOTARIZE_API_KEY_ID`, `MACOS_NOTARIZE_API_ISSUER`, or
-  `MACOS_NOTARIZE_APPLE_ID` + `MACOS_NOTARIZE_PASSWORD` (app-specific password).
+- `MACOS_CERTIFICATE` (Developer ID Application `.p12`, base64) and
+  `MACOS_CERTIFICATE_PWD`
+- for notarization either `MACOS_NOTARIZE_API_KEY` (App Store Connect `.p8`,
+  base64), `MACOS_NOTARIZE_API_KEY_ID`, `MACOS_NOTARIZE_API_ISSUER`, or
+  `MACOS_NOTARIZE_APPLE_ID` + `MACOS_NOTARIZE_PASSWORD` (app-specific
+  password) + `MACOS_TEAM_ID`
 
 The Mac App Store isn't an option for this project: its terms conflict with
 the GPL.

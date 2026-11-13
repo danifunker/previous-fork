@@ -5,21 +5,15 @@ name: Build and release
 # the selected branch and publishes the release. With "release_tag" empty
 # a manual run only builds; the archives are attached to the run.
 #
-# macOS signing mode: the "signing" input of a manual run (unless left at
-# "repository setting"), else the repository variable MACOS_SIGNING, else
-# ad-hoc.
-#   ad-hoc             no certificate (default)
-#   developer-signing  Developer ID + notarization (MACOS_* secrets)
+# macOS: every run signs the app with the Developer ID certificate and has
+# it notarized by Apple (MACOS_* secrets, see README.md). A run without
+# those secrets, or whose notarization isn't accepted, fails - there are no
+# ad-hoc signed builds.
 on:
   push:
     tags: ['r*', 'v*']
   workflow_dispatch:
     inputs:
-      signing:
-        description: macOS signing
-        type: choice
-        options: [repository setting, ad-hoc, developer-signing]
-        default: repository setting
       release_tag:
         description: Release tag to create (e.g. r1862-1); empty = build only
         type: string
@@ -35,24 +29,20 @@ jobs:
   macos:
     runs-on: macos-latest
     outputs:
-      signed: ${{ steps.sign.outputs.signed }}
-    env:
-      SIGNING: ${{ (inputs.signing != 'repository setting' && inputs.signing) || vars.MACOS_SIGNING || 'ad-hoc' }}
-      HAS_SIGNING_CERT: ${{ secrets.MACOS_CERTIFICATE != '' }}
+      notarized: ${{ steps.notarize.outputs.notarized }}
     steps:
-      - name: Check signing mode
+      # fail early, before building, when signing or notarization can't work
+      - name: Check signing secrets
+        env:
+          HAS_CERT: ${{ secrets.MACOS_CERTIFICATE != '' && secrets.MACOS_CERTIFICATE_PWD != '' }}
+          HAS_API_KEY: ${{ secrets.MACOS_NOTARIZE_API_KEY != '' && secrets.MACOS_NOTARIZE_API_KEY_ID != '' && secrets.MACOS_NOTARIZE_API_ISSUER != '' }}
+          HAS_APPLE_ID: ${{ secrets.MACOS_NOTARIZE_APPLE_ID != '' && secrets.MACOS_NOTARIZE_PASSWORD != '' && secrets.MACOS_TEAM_ID != '' }}
         run: |
-          echo "macOS signing mode: $SIGNING"
-          case $SIGNING in
-            ad-hoc) ;;
-            developer-signing)
-              [ "$HAS_SIGNING_CERT" = true ] ||
-                { echo "::error::developer-signing needs the MACOS_* secrets (see README.md)"; exit 1; } ;;
-            mac-app-store)
-              echo "::error::mac-app-store isn't supported for Previous: the Mac App Store's terms conflict with the GPL"
-              exit 1 ;;
-            *) echo "::error::unknown signing mode '$SIGNING' (ad-hoc or developer-signing)"; exit 1 ;;
-          esac
+          [ "$HAS_CERT" = true ] ||
+            { echo "::error::MACOS_CERTIFICATE / MACOS_CERTIFICATE_PWD missing: every build must be signed and notarized (see README.md)"; exit 1; }
+          [ "$HAS_API_KEY" = true ] || [ "$HAS_APPLE_ID" = true ] ||
+            { echo "::error::notarization credentials missing: MACOS_NOTARIZE_API_KEY/_KEY_ID/_ISSUER or MACOS_NOTARIZE_APPLE_ID/_PASSWORD + MACOS_TEAM_ID (see README.md)"; exit 1; }
+          echo "macOS: Developer ID signing and notarization"
 
       - uses: actions/checkout@v7
 
@@ -90,7 +80,6 @@ jobs:
           cp build/src/ditool/ditool dist-mac/
 
       - name: Import signing certificate
-        if: env.SIGNING == 'developer-signing'
         env:
           MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
           MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
@@ -114,26 +103,18 @@ jobs:
         id: sign
         run: |
           app=dist-mac/Previous.app
-          if [ -n "${SIGN_IDENTITY:-}" ]; then
-            echo "signing with: $SIGN_IDENTITY"
-            opts="--force --timestamp --options runtime -s"
-            # inner code first, the app last (no --deep)
-            codesign $opts "$SIGN_IDENTITY" $app/Contents/Frameworks/libSDL3.0.dylib
-            codesign $opts "$SIGN_IDENTITY" dist-mac/ditool
-            codesign $opts "$SIGN_IDENTITY" --entitlements macos/previous.entitlements $app
-            echo "signed=developer-signing" >> $GITHUB_OUTPUT
-          else
-            echo "no signing certificate configured: ad-hoc signing"
-            codesign --force -s - $app/Contents/Frameworks/libSDL3.0.dylib
-            codesign --force -s - dist-mac/ditool
-            codesign --force -s - --entitlements macos/previous.entitlements $app
-            echo "signed=ad-hoc" >> $GITHUB_OUTPUT
-          fi
+          [ -n "${SIGN_IDENTITY:-}" ] || { echo "::error::no signing identity"; exit 1; }
+          echo "signing with: $SIGN_IDENTITY"
+          opts="--force --timestamp --options runtime -s"
+          # inner code first, the app last (no --deep)
+          codesign $opts "$SIGN_IDENTITY" $app/Contents/Frameworks/libSDL3.0.dylib
+          codesign $opts "$SIGN_IDENTITY" dist-mac/ditool
+          codesign $opts "$SIGN_IDENTITY" --entitlements macos/previous.entitlements $app
           codesign --verify --strict --verbose=2 $app
           codesign --verify --strict --verbose=2 dist-mac/ditool
 
       - name: Notarize
-        if: env.SIGNING == 'developer-signing'
+        id: notarize
         env:
           APPLE_ID: ${{ secrets.MACOS_NOTARIZE_APPLE_ID }}
           APPLE_PWD: ${{ secrets.MACOS_NOTARIZE_PASSWORD }}
@@ -149,7 +130,7 @@ jobs:
           elif [ -n "$APPLE_ID" ]; then
             set -- --apple-id "$APPLE_ID" --password "$APPLE_PWD" --team-id "$TEAM_ID"
           else
-            echo "MACOS_CERTIFICATE is set but no notarization credentials are"; exit 1
+            echo "::error::no notarization credentials"; exit 1
           fi
           # the app and ditool go to Apple together; the ticket is stapled
           # to the app (a bare executable can't hold one, Gatekeeper looks
@@ -173,6 +154,7 @@ jobs:
           xcrun stapler staple dist-mac/Previous.app
           xcrun stapler validate dist-mac/Previous.app
           spctl --assess --type execute --verbose dist-mac/Previous.app
+          echo "notarized=true" >> $GITHUB_OUTPUT
 
       - name: Remove signing keychain
         if: always() && env.KEYCHAIN_PATH != ''
@@ -355,9 +337,11 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/') || inputs.release_tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
-          MAC_SIGNED: ${{ needs.macos.outputs.signed }}
+          MAC_NOTARIZED: ${{ needs.macos.outputs.notarized }}
           TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
+          [ "$MAC_NOTARIZED" = true ] ||
+            { echo "::error::the macOS app wasn't notarized - not publishing"; exit 1; }
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "::error::release $TAG already exists"; exit 1
           fi
@@ -376,12 +360,7 @@ jobs:
           The ROM images are included. These builds leave out libpng (screenshots are TIFF),
           readline and pcap (networking uses the built-in SLiRP).
           EOF
-          if [ "$MAC_SIGNED" = "developer-signing" ]; then
-            echo "macOS: signed with a Developer ID and notarized by Apple." >> notes.md
-          else
-            printf '%s\n' "macOS: not notarized (ad-hoc signed). If macOS refuses to open the app, run" \
-              '`xattr -dr com.apple.quarantine Previous.app`.' >> notes.md
-          fi
+          echo "macOS: signed with a Developer ID and notarized by Apple." >> notes.md
           # creates the tag on this commit if it doesn't exist yet
           gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "Previous $TAG" --notes-file notes.md
